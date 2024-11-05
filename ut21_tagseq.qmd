@@ -1,0 +1,196 @@
+---
+title: "ut21_tagseq"
+format: html
+editor: visual
+---
+
+```{r echo= FALSE}
+library(tidyverse)
+library(readr)
+library(DESeq2)
+library(org.Rn.eg.db)
+library(EnhancedVolcano)
+library(patchwork)
+library(ggprism)
+```
+
+### Turning the individual htseq count files into a count matrix
+
+```{r}
+# Set the full path to the working directory
+full_path <- "/stor/work/Fonken/UT21_tagseq/JA24159-423452132/concat_fastq/trim_files/star_trim/htseq_counts/"
+
+# Get the list of count files with the full path
+file_list <- list.files(full_path, pattern = "*.txt", full.names = TRUE)
+
+# making a list of data frames with row and column names while removing last five lines from HTSeq that contains the features and ambiguous read infromation
+dfList <- lapply(file_list, function(x) {
+  read.csv(x, nrows = length(count.fields(x))-5, sep = "\t", header = F, row.names = 1, col.names = c("genes",tools::file_path_sans_ext(basename(x))))})
+
+# combining all the dataframes into single dataframe
+matrix <- bind_cols(dfList)
+
+# renaming the columns to take the 6th and 7th character from the current file names 
+colnames(matrix) <- sapply(colnames(matrix), function(x) substr(x, 6, 7))
+```
+
+### Splitting the count matrix into one for females and males
+
+```{r}
+# splitting matrices into males and females
+m_matrix <- matrix %>%
+  dplyr::select("A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3") 
+  #dropped B2 (low reads)
+  #dropped C3, F3 (choroid plexus contamination)
+
+f_matrix <- matrix %>%
+  dplyr::select("E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3") 
+  #dropped E2 (low reads + choroid plexus contamination)
+  #dropped F2, E3 (choroid plexus contamination)
+
+# group information 
+group_info <- read.csv("/stor/work/Fonken/UT21_tagseq/ut21_tagseq/group_info_ut21.csv")
+
+m_group_info <- group_info %>%
+  filter(sex == "male", !id %in% c("B2", "C3", "F3"))
+  
+f_group_info <- group_info %>%
+  filter(sex == "female", !id %in% c("E2", "F2", "E3"))
+```
+
+**DESeq**
+
+```{r}
+### Males 
+# constructing object 
+m_dds <- DESeqDataSetFromMatrix(countData = m_matrix,
+                       colData = m_group_info, 
+                       design = ~treatment)
+
+# prefiltering, only keeping genes with more than XX reads
+m_keep <- rowSums(counts(m_dds)) >= 10
+m_dds <- m_dds[m_keep,]
+
+# running DESeq
+m_dds <- DESeq(m_dds)
+m_res <- results(m_dds, contrast = c("treatment", "oil", "flutamide"))
+m_res
+
+summary(m_res)
+
+m_res_ordered <- m_res[order(m_res$pvalue),]
+head(m_res_ordered)
+
+# DF and gene name annotations
+m_res_df <- as.data.frame(m_res_ordered)
+m_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(m_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+
+### Females
+# constructing object 
+f_dds <- DESeqDataSetFromMatrix(countData = f_matrix,
+                       colData = f_group_info, 
+                       design = ~treatment)
+
+# prefiltering, only keeping genes with more than XX reads
+f_keep <- rowSums(counts(f_dds)) >= 10
+f_dds <- f_dds[f_keep,]
+
+# running DESeq
+f_dds <- DESeq(f_dds)
+f_res <- results(f_dds, contrast = c("treatment", "oil", "testosterone"))
+f_res
+
+# Making a list of results, ordered by p value 
+f_res_ordered <- f_res[order(f_res$pvalue),]
+head(f_res_ordered)
+
+summary(f_res)
+
+# making the DF and adding gene name annotations
+f_res_df <- as.data.frame(f_res_ordered)
+f_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(f_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+### Volcano Plots
+
+```{r fig.height = 5, fig.width = 10}
+m_volcano <- EnhancedVolcano(m_res_df,
+  lab = m_res_df$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue', 
+  pCutoff = 0.05,
+  FCcutoff = 1.5,
+  xlim = c(-6, 6),
+  ylim = c(0, 8),
+  title = "Males",
+  legendPosition = 'none',
+  subtitle = NULL,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  col = c("grey30", "red2", "orange", "forestgreen"))
+
+f_volcano <- EnhancedVolcano(f_res_df,
+  lab = f_res_df$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue', 
+  pCutoff = 0.05,
+  FCcutoff = 1.5,
+  xlim = c(-6, 6),
+  ylim = c(0, 8),
+  title = "Females",
+  legendPosition = 'none',
+  subtitle = NULL,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  col = c("grey30", "red2", "orange", "forestgreen"))
+
+volcano_combo <- f_volcano + m_volcano
+volcano_combo
+```
+
+Looking at Ttr expression
+
+```{r}
+ttr_matrix<- matrix
+
+ttr_matrix$symbol <- mapIds(org.Rn.eg.db, keys = rownames(ttr_matrix), keytype = "ENSEMBL", column = "SYMBOL")
+
+ttr_matrix <- ttr_matrix %>%
+  filter(symbol == "Ttr") %>%
+  t() %>%
+  as.data.frame %>%
+  rownames_to_column()
+
+colnames(ttr_matrix) <- c("id", "count")
+
+ttr_matrix <- ttr_matrix %>%
+  left_join(group_info, by = "id") %>%
+  filter(id != "symbol") 
+
+ttr_matrix$count <- as.numeric(as.character(ttr_matrix$count))
+
+ggplot(ttr_matrix, aes(x= id, y = count, color = sex, fill = treatment)) + 
+  geom_bar(stat = "identity") + 
+  ggtitle("Raw Ttr gene counts by sample") + 
+  theme_minimal()
+
+```
+
+Plot PCA
+
+```{r}
+# males 
+m_vst <- vst(m_dds)
+
+m_pca <- plotPCA(m_vst, intgroup = c("treatment"))  
+  
+m_pca + geom_label(aes(label = name))
+
+# females
+f_vst <- vst(f_dds)
+
+f_pca <- plotPCA(f_vst, intgroup = c("treatment"))
+
+f_pca + geom_label(aes(label = name))
+
+```
