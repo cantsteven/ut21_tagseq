@@ -12,6 +12,11 @@ library(org.Rn.eg.db)
 library(EnhancedVolcano)
 library(patchwork)
 library(ggprism)
+
+# For GSEA 
+library(clusterProfiler) #BiocManager::install("clusterProfiler")
+library(org.Rn.eg.db) #BiocManager::install("org.Rn.eg.db")
+library(scales) # for wrapping long text in graphs 
 ```
 
 ### Turning the individual htseq count files into a count matrix
@@ -39,12 +44,12 @@ colnames(matrix) <- sapply(colnames(matrix), function(x) substr(x, 6, 7))
 ```{r}
 # splitting matrices into males and females
 m_matrix <- matrix %>%
-  dplyr::select("A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3") 
+  dplyr::select("A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3", "C3", "F3") 
   #dropped B2 (low reads)
   #dropped C3, F3 (choroid plexus contamination)
 
 f_matrix <- matrix %>%
-  dplyr::select("E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3") 
+  dplyr::select("E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3", "F2", "E3") 
   #dropped E2 (low reads + choroid plexus contamination)
   #dropped F2, E3 (choroid plexus contamination)
 
@@ -52,10 +57,10 @@ f_matrix <- matrix %>%
 group_info <- read.csv("/stor/work/Fonken/UT21_tagseq/ut21_tagseq/group_info_ut21.csv")
 
 m_group_info <- group_info %>%
-  filter(sex == "male", !id %in% c("B2", "C3", "F3"))
+  filter(sex == "male", !id %in% c("B2"))
   
 f_group_info <- group_info %>%
-  filter(sex == "female", !id %in% c("E2", "F2", "E3"))
+  filter(sex == "female", !id %in% c("E2"))
 ```
 
 **DESeq**
@@ -118,6 +123,7 @@ m_volcano <- EnhancedVolcano(m_res_df,
   lab = m_res_df$symbol,
   x = 'log2FoldChange',
   y = 'pvalue', 
+  pCutoffCol = "padj",
   pCutoff = 0.05,
   FCcutoff = 1.5,
   xlim = c(-6, 6),
@@ -133,6 +139,7 @@ f_volcano <- EnhancedVolcano(f_res_df,
   lab = f_res_df$symbol,
   x = 'log2FoldChange',
   y = 'pvalue', 
+  pCutoffCol = "padj",
   pCutoff = 0.05,
   FCcutoff = 1.5,
   xlim = c(-6, 6),
@@ -148,7 +155,222 @@ volcano_combo <- f_volcano + m_volcano
 volcano_combo
 ```
 
-Looking at Ttr expression
+```{r fig.height = 15, fig.width = 12}
+# Males --------
+# Creating the Ranked Gene List for GSEA GO Analysis 
+m_genelist <- m_res_df$log2FoldChange
+names(m_genelist) <- m_res_df$symbol
+m_genelist = sort(m_genelist, decreasing = TRUE)
+
+gse_m <- gseGO(geneList=m_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_m_df <- gse_m@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_m@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_m_graph <- ggplot(gse_m_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#4CAF50")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+#Females
+# Creating the Ranked Gene List for GSEA GO Analysis 
+f_genelist <- f_res_df$log2FoldChange
+names(f_genelist) <- f_res_df$symbol
+f_genelist = sort(f_genelist, decreasing = TRUE)
+
+gse_f <- gseGO(geneList=f_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_f_df <- gse_f@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_f@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_f_graph <- ggplot(gse_f_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#9C27B0", "FALSE" = "#9C27B0")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+# Males
+# Creating the ranked gene list for GSEA KEGG Analysis (This one needs EntrezIDs)
+ m_res_df_kegg <-  m_res_df %>%
+  rownames_to_column(var = "gene")
+
+ m_res_df_kegg$entrez_id <- mapIds(org.Rn.eg.db, 
+                               keys = m_res_df_kegg$gene, 
+                               column = "ENTREZID", 
+                               keytype = "ENSEMBL", 
+                               multiVals = "first")
+
+# Excluding NA values 
+ m_res_df_kegg <- na.omit(m_res_df_kegg)
+
+# Creating list 
+kegglist <- m_res_df_kegg$log2FoldChange
+names(kegglist) <- m_res_df_kegg$entrez_id
+kegglist = sort(kegglist, decreasing = TRUE)
+kegg_organism = "rno" # need to define organism with 3 letter code
+
+m_kegg <- gseKEGG(geneList = kegglist,
+               organism     = kegg_organism,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid")
+
+m_kegg_df <- m_kegg@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            m_kegg@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+m_kegg_graph <- ggplot(m_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#4CAF50")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("KEGG Pathways") + 
+    ylab(NULL)
+
+m_kegg_graph
+
+# Females
+# Creating the ranked gene list for GSEA KEGG Analysis (This one needs EntrezIDs)
+ f_res_df_kegg <-  f_res_df %>%
+  rownames_to_column(var = "gene")
+
+ f_res_df_kegg$entrez_id <- mapIds(org.Rn.eg.db, 
+                               keys = f_res_df_kegg$gene, 
+                               column = "ENTREZID", 
+                               keytype = "ENSEMBL", 
+                               multiVals = "first")
+
+# Excluding NA values 
+ f_res_df_kegg <- na.omit(f_res_df_kegg)
+
+# Creating list 
+kegglist <- f_res_df_kegg$log2FoldChange
+names(kegglist) <- f_res_df_kegg$entrez_id
+kegglist = sort(kegglist, decreasing = TRUE)
+kegg_organism = "rno" # need to define organism with 3 letter code
+
+f_kegg <- gseKEGG(geneList = kegglist,
+               organism     = kegg_organism,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid")
+
+f_kegg_df <- f_kegg@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            f_kegg@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+f_kegg_graph <- ggplot(f_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#9C27B0", "FALSE" = "#9C27B0")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("KEGG Pathways") + 
+    ylab(NULL)
+
+f_kegg_graph
+
+# Volcano plots read in
+# Males
+volcano_m <- EnhancedVolcano(m_res_df,
+                             lab = m_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             selectLab = c('Mfrp','Igfbp2'),
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 10),
+                             subtitle = NULL,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("gray50", "#4CAF50", "#4CAF50", "#4CAF50")
+                             ) + 
+  ggtitle("Males") + 
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+# Females
+volcano_f <- EnhancedVolcano(f_res_df,
+                             lab = f_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 10),
+                             subtitle = NULL,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("gray50", "#9C27B0", "#9C27B0", "#9C27B0")
+                             ) + 
+  ggtitle("Females") + 
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+# Figure 2 Creation---
+free(volcano_f + volcano_m) / (gse_f_graph + gse_m_graph) / (f_kegg_graph + m_kegg_graph) + plot_layout(height = c(2,2,2)) + plot_annotation(tag_levels = 'A') 
+
+ggsave("/stor/work/Fonken/UT23_snRNAseq/local_ut23/Graphs/microglia_ut23_volcanogsea.png", dpi = 300, width = 12, height = 15)
+```
+
+### Looking at Ttr expression
 
 ```{r}
 ttr_matrix<- matrix
@@ -176,7 +398,7 @@ ggplot(ttr_matrix, aes(x= id, y = count, color = sex, fill = treatment)) +
 
 ```
 
-Plot PCA
+### Plot PCA
 
 ```{r}
 # males 
