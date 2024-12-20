@@ -44,23 +44,33 @@ colnames(matrix) <- sapply(colnames(matrix), function(x) substr(x, 6, 7))
 ```{r}
 # splitting matrices into males and females
 m_matrix <- matrix %>%
-  dplyr::select("A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3", "C3", "F3") 
+  dplyr::select("B2", "A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3", "C3", "F3") 
   #dropped B2 (low reads)
-  #dropped C3, F3 (choroid plexus contamination)
+  #dropped C3, F3 (possible choroid plexus contamination)
+ #in the end kept all subjects in
 
 f_matrix <- matrix %>%
-  dplyr::select("E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3", "F2", "E3") 
+  dplyr::select("E2", "E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3", "F2", "E3") 
   #dropped E2 (low reads + choroid plexus contamination)
-  #dropped F2, E3 (choroid plexus contamination)
+  #dropped F2, E3 (possible choroid plexus contamination)
+#in the end kept all subjects in
 
 # group information 
 group_info <- read.csv("/stor/work/Fonken/UT21_tagseq/ut21_tagseq/group_info_ut21.csv")
 
 m_group_info <- group_info %>%
-  filter(sex == "male", !id %in% c("B2"))
+  filter(sex == "male") %>%
+   mutate(treatment = factor(treatment, levels = c("oil", "flutamide")))
+
+#%>%
+  #filter(sex == "male", !id %in% c("B2"))
   
 f_group_info <- group_info %>%
-  filter(sex == "female", !id %in% c("E2"))
+  filter(sex == "female") %>%
+   mutate(treatment = factor(treatment, levels = c("oil", "testosterone")))
+
+#%>%
+  #filter(sex == "female", !id %in% c("E2"))
 ```
 
 **DESeq**
@@ -114,6 +124,90 @@ summary(f_res)
 # making the DF and adding gene name annotations
 f_res_df <- as.data.frame(f_res_ordered)
 f_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(f_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+
+write.csv(f_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/f_res_df.csv")
+write.csv(m_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/m_res_df.csv")
+```
+
+### Comparing males and females with only oil
+
+```{r fig.height = 8, fig.width = 8}
+group_info_oil <- group_info[group_info$treatment == "oil", ]
+
+matrix_oil <- matrix[, (group_info_oil$id)]
+
+### Females and Males 
+# constructing object 
+mf_dds <- DESeqDataSetFromMatrix(countData = matrix_oil,
+                       colData = group_info_oil, 
+                       design = ~sex)
+
+# prefiltering, only keeping genes with more than XX reads
+mf_keep <- rowSums(counts(mf_dds)) >= 10
+mf_dds <- mf_dds[mf_keep,]
+
+# running DESeq
+mf_dds <- DESeq(mf_dds)
+mf_res <- results(mf_dds, contrast = c("sex", "female", "male"))
+mf_res
+
+summary(mf_res)
+
+mf_res_ordered <- mf_res[order(mf_res$pvalue),]
+head(mf_res_ordered)
+
+# DF and gene name annotations
+mf_res_df <- as.data.frame(mf_res_ordered)
+mf_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(mf_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+
+mf_volcano <- EnhancedVolcano(mf_res_df,
+  lab = mf_res_df$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue', 
+  pCutoffCol = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 0.5,
+  #xlim = c(-6, 6),
+  #ylim = c(0, 8),
+  selectLab = c("Kdm5d", "Eif2s3y", "LOC103694537", "Ddx3", "Uty", "Eif2s3", "Amz1", "ENSRNOG00000065796"),
+  title = "Females vs Males Oil Treatment Only",
+  legendPosition = 'none',
+  subtitle = NULL,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  col = c("grey30", "red2", "orange", "forestgreen"))
+
+mf_volcano
+
+
+```
+
+### **Comparing all males and females**
+
+```{r}
+### Females and Males 
+# constructing object 
+mf_dds <- DESeqDataSetFromMatrix(countData = matrix,
+                       colData = group_info, 
+                       design = ~sex)
+
+# prefiltering, only keeping genes with more than XX reads
+mf_keep <- rowSums(counts(mf_dds)) >= 10
+mf_dds <- mf_dds[mf_keep,]
+
+# running DESeq
+mf_dds <- DESeq(mf_dds)
+mf_res <- results(mf_dds, contrast = c("sex", "female", "male"))
+mf_res
+
+summary(mf_res)
+
+mf_res_ordered <- mf_res[order(mf_res$pvalue),]
+head(mf_res_ordered)
+
+# DF and gene name annotations
+mf_res_df <- as.data.frame(mf_res_ordered)
+mf_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(mf_res_df), keytype = "ENSEMBL", column = "SYMBOL")
 ```
 
 ### Volcano Plots
@@ -332,16 +426,18 @@ volcano_m <- EnhancedVolcano(m_res_df,
                              y = "pvalue",
                              FCcutoff = 0.5,
                              pCutoff = 0.05,
-                             selectLab = c('Mfrp','Igfbp2'),
+                             #selectLab = c('Mfrp','Igfbp2'),
                              pCutoffCol = "padj",
                              xlim = c(-4, 4),
-                             ylim = c(0, 10),
+                             ylim = c(0, 9),
                              subtitle = NULL,
                              gridlines.major = FALSE,
                              gridlines.minor = FALSE,
                              col = c("gray50", "#4CAF50", "#4CAF50", "#4CAF50")
                              ) + 
   ggtitle("Males") + 
+  annotate("text", x = 1.5, y = 8.5, label = "↑ with flutamide", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.5, label = "↓ with flutamide", hjust = 0, size = 5, color = 'black') +
   theme_prism(base_size = 10) + 
   theme(legend.position = "none")
 
@@ -354,13 +450,15 @@ volcano_f <- EnhancedVolcano(f_res_df,
                              pCutoff = 0.05,
                              pCutoffCol = "padj",
                              xlim = c(-4, 4),
-                             ylim = c(0, 10),
+                             ylim = c(0, 9),
                              subtitle = NULL,
                              gridlines.major = FALSE,
                              gridlines.minor = FALSE,
                              col = c("gray50", "#9C27B0", "#9C27B0", "#9C27B0")
                              ) + 
   ggtitle("Females") + 
+  annotate("text", x = 1, y = 8.5, label = "↑ with testosterone", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.5, label = "↓ with testosterone", hjust = 0, size = 5, color = 'black') +
   theme_prism(base_size = 10) + 
   theme(legend.position = "none")
 
