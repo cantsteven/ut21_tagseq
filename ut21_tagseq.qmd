@@ -88,7 +88,7 @@ m_dds <- m_dds[m_keep,]
 
 # running DESeq
 m_dds <- DESeq(m_dds)
-m_res <- results(m_dds, contrast = c("treatment", "oil", "flutamide"))
+m_res <- results(m_dds, contrast = c("treatment", "oil", "flutamide"), alpha = 0.05)
 m_res
 
 summary(m_res)
@@ -100,6 +100,11 @@ head(m_res_ordered)
 m_res_df <- as.data.frame(m_res_ordered)
 m_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(m_res_df), keytype = "ENSEMBL", column = "SYMBOL")
 
+m_res_df_2 <- m_res_df %>%
+  filter(padj < 0.05) 
+
+write.csv(m_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/malessiggenes.csv")
+         
 ### Females
 # constructing object 
 f_dds <- DESeqDataSetFromMatrix(countData = f_matrix,
@@ -112,7 +117,7 @@ f_dds <- f_dds[f_keep,]
 
 # running DESeq
 f_dds <- DESeq(f_dds)
-f_res <- results(f_dds, contrast = c("treatment", "oil", "testosterone"))
+f_res <- results(f_dds, contrast = c("treatment", "oil", "testosterone"), alpha = 0.05)
 f_res
 
 # Making a list of results, ordered by p value 
@@ -124,6 +129,13 @@ summary(f_res)
 # making the DF and adding gene name annotations
 f_res_df <- as.data.frame(f_res_ordered)
 f_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(f_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+
+f_res_df_2 <- f_res_df %>%
+  filter(padj < 0.05) 
+
+write.csv(f_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/femalessiggenes.csv")
+
+write.csv(m_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/malessiggenes.csv")
 
 write.csv(f_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/f_res_df.csv")
 write.csv(m_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/m_res_df.csv")
@@ -278,7 +290,7 @@ gse_m_df <- gse_m@result %>%
 gse_m_graph <- ggplot(gse_m_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
     geom_col(orientation='y') + 
     theme_prism(base_size = 9) + 
-    scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#4CAF50")) +
+    scale_fill_manual(values = c("TRUE" = "#73B2FA", "FALSE" = "#73B2FA")) +
     scale_y_discrete(labels = label_wrap(40)) + 
     theme(legend.position = "none") + 
     xlab("Normalized Enrichment Score") + 
@@ -313,7 +325,7 @@ gse_f_df <- gse_f@result %>%
 gse_f_graph <- ggplot(gse_f_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
     geom_col(orientation='y') + 
     theme_prism(base_size = 9) + 
-    scale_fill_manual(values = c("TRUE" = "#9C27B0", "FALSE" = "#9C27B0")) +
+    scale_fill_manual(values = c("TRUE" = "#F19837", "FALSE" = "#F19837")) +
     scale_y_discrete(labels = label_wrap(40)) + 
     theme(legend.position = "none") + 
     xlab("Normalized Enrichment Score") + 
@@ -360,7 +372,7 @@ m_kegg_df <- m_kegg@result %>%
 m_kegg_graph <- ggplot(m_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
     geom_col(orientation='y') + 
     theme_prism(base_size = 9) + 
-    scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#4CAF50")) +
+    scale_fill_manual(values = c("TRUE" = "#73B2FA", "FALSE" = "#73B2FA")) +
     scale_y_discrete(labels = label_wrap(40)) + 
     theme(legend.position = "none") + 
     xlab("Normalized Enrichment Score") + 
@@ -409,7 +421,7 @@ f_kegg_df <- f_kegg@result %>%
 f_kegg_graph <- ggplot(f_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
     geom_col(orientation='y') + 
     theme_prism(base_size = 9) + 
-    scale_fill_manual(values = c("TRUE" = "#9C27B0", "FALSE" = "#9C27B0")) +
+    scale_fill_manual(values = c("TRUE" = "#F19837", "FALSE" = "#F19837")) +
     scale_y_discrete(labels = label_wrap(40)) + 
     theme(legend.position = "none") + 
     xlab("Normalized Enrichment Score") + 
@@ -431,13 +443,14 @@ volcano_m <- EnhancedVolcano(m_res_df,
                              xlim = c(-4, 4),
                              ylim = c(0, 9),
                              subtitle = NULL,
+                             drawConnectors = TRUE,
                              gridlines.major = FALSE,
                              gridlines.minor = FALSE,
-                             col = c("gray50", "#4CAF50", "#4CAF50", "#4CAF50")
+                             col = c("gray50", "#96A9C5", "#73B2FA", "#73B2FA")
                              ) + 
   ggtitle("Males") + 
-  annotate("text", x = 1.5, y = 8.5, label = "↑ with flutamide", hjust = 0, size = 5, color = 'black') +
-  annotate("text", x = -3.5, y = 8.5, label = "↓ with flutamide", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = 1.5, y = 8.7, label = "↑ with flutamide", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with flutamide", hjust = 0, size = 5, color = 'black') +
   theme_prism(base_size = 10) + 
   theme(legend.position = "none")
 
@@ -452,20 +465,24 @@ volcano_f <- EnhancedVolcano(f_res_df,
                              xlim = c(-4, 4),
                              ylim = c(0, 9),
                              subtitle = NULL,
+                             selectLab = c("Cd9", "Carhsp1", "Septin4", "Ptp4a1", "Apba2", "Eef1a2", "Adap1"),
+                             drawConnectors = TRUE,
                              gridlines.major = FALSE,
                              gridlines.minor = FALSE,
-                             col = c("gray50", "#9C27B0", "#9C27B0", "#9C27B0")
+                             col = c("gray50", "#C29A6D", "#F19837", "#F19837")
                              ) + 
   ggtitle("Females") + 
-  annotate("text", x = 1, y = 8.5, label = "↑ with testosterone", hjust = 0, size = 5, color = 'black') +
-  annotate("text", x = -3.5, y = 8.5, label = "↓ with testosterone", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = 1, y = 8.7, label = "↑ with testosterone", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with testosterone", hjust = 0, size = 5, color = 'black') +
   theme_prism(base_size = 10) + 
   theme(legend.position = "none")
 
-# Figure 2 Creation---
-free(volcano_f + volcano_m) / (gse_f_graph + gse_m_graph) / (f_kegg_graph + m_kegg_graph) + plot_layout(height = c(2,2,2)) + plot_annotation(tag_levels = 'A') 
+volcano_f
 
-ggsave("/stor/work/Fonken/UT23_snRNAseq/local_ut23/Graphs/microglia_ut23_volcanogsea.png", dpi = 300, width = 12, height = 15)
+# Figure 2 Creation---
+free(volcano_m + volcano_f) / (gse_m_graph + gse_f_graph) / (m_kegg_graph + f_kegg_graph) + plot_layout(height = c(2,2,2)) + plot_annotation(tag_levels = 'A') 
+
+ggsave("/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/figurevolcanogokegg.png", dpi = 300, width = 12, height = 15)
 ```
 
 ### Looking at Ttr expression
