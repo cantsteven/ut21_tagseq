@@ -1,0 +1,757 @@
+---
+title: "ut21_tagseq"
+format: html
+editor: visual
+---
+
+```{r echo= FALSE}
+library(tidyverse)
+library(readr)
+library(DESeq2)
+library(org.Rn.eg.db)
+library(EnhancedVolcano)
+library(patchwork)
+library(ggprism)
+library(svglite)
+library(ggpubr)
+
+# For GSEA 
+library(clusterProfiler) #BiocManager::install("clusterProfiler")
+library(org.Rn.eg.db) #BiocManager::install("org.Rn.eg.db")
+library(scales) # for wrapping long text in graphs 
+```
+
+### Turning the individual htseq count files into a count matrix
+
+```{r}
+# Set the full path to the working directory
+full_path <- "/stor/work/Fonken/UT21_tagseq/JA24159-423452132/concat_fastq/trim_files/star_trim/htseq_counts/"
+
+# Get the list of count files with the full path
+file_list <- list.files(full_path, pattern = "*.txt", full.names = TRUE)
+
+# making a list of data frames with row and column names while removing last five lines from HTSeq that contains the features and ambiguous read infromation
+dfList <- lapply(file_list, function(x) {
+  read.csv(x, nrows = length(count.fields(x))-5, sep = "\t", header = F, row.names = 1, col.names = c("genes",tools::file_path_sans_ext(basename(x))))})
+
+# combining all the dataframes into single dataframe
+matrix <- bind_cols(dfList)
+
+# renaming the columns to take the 6th and 7th character from the current file names 
+colnames(matrix) <- sapply(colnames(matrix), function(x) substr(x, 6, 7))
+```
+
+### Splitting the count matrix into one for females and males
+
+```{r}
+# splitting matrices into males and females
+m_matrix <- matrix %>%
+  dplyr::select("B2", "A1", "B1", "C1", "D1", "C2", "H2", "A3", "B3", "C3", "F3") 
+  #dropped B2 (low reads)
+  #dropped C3, F3 (possible choroid plexus contamination)
+ #in the end kept all subjects in
+
+f_matrix <- matrix %>%
+  dplyr::select("E2", "E1", "F1", "G1", "H1", "A2", "D2", "G2", "D3", "F2", "E3") 
+  #dropped E2 (low reads + choroid plexus contamination)
+  #dropped F2, E3 (possible choroid plexus contamination)
+#in the end kept all subjects in
+
+# group information 
+group_info <- read.csv("/stor/work/Fonken/UT21_tagseq/ut21_tagseq/group_info_ut21.csv")
+
+m_group_info <- group_info %>%
+  filter(sex == "male") %>%
+   mutate(treatment = factor(treatment, levels = c("oil", "flutamide")))
+
+#%>%
+  #filter(sex == "male", !id %in% c("B2"))
+  
+f_group_info <- group_info %>%
+  filter(sex == "female") %>%
+   mutate(treatment = factor(treatment, levels = c("oil", "testosterone")))
+
+#%>%
+  #filter(sex == "female", !id %in% c("E2"))
+```
+
+**DESeq**
+
+```{r}
+### Males 
+# constructing object 
+m_dds <- DESeqDataSetFromMatrix(countData = m_matrix,
+                       colData = m_group_info, 
+                       design = ~treatment)
+
+# prefiltering, only keeping genes with more than XX reads
+m_keep <- rowSums(counts(m_dds)) >= 10
+m_dds <- m_dds[m_keep,]
+
+# running DESeq
+m_dds <- DESeq(m_dds)
+m_res <- results(m_dds, contrast = c("treatment", "oil", "flutamide"), alpha = 0.05)
+m_res
+
+summary(m_res)
+
+m_res_ordered <- m_res[order(m_res$pvalue),]
+head(m_res_ordered)
+
+# DF and gene name annotations
+m_res_df <- as.data.frame(m_res_ordered)
+m_res_df$symbol <- mapIds(org.Rn.eg.db, 
+                          keys = rownames(m_res_df), 
+                          keytype = "ENSEMBL", 
+                          multiVals = "first",
+                          column = "SYMBOL")
+
+m_res_df_2 <- m_res_df %>%
+  filter(padj < 0.05) 
+
+write.csv(m_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/malessiggenes.csv")
+         
+### Females
+# constructing object 
+f_dds <- DESeqDataSetFromMatrix(countData = f_matrix,
+                       colData = f_group_info, 
+                       design = ~treatment)
+
+# prefiltering, only keeping genes with more than XX reads
+f_keep <- rowSums(counts(f_dds)) >= 10
+f_dds <- f_dds[f_keep,]
+
+# running DESeq
+f_dds <- DESeq(f_dds)
+f_res <- results(f_dds, contrast = c("treatment", "oil", "testosterone"), alpha = 0.05)
+f_res
+
+# Making a list of results, ordered by p value 
+f_res_ordered <- f_res[order(f_res$pvalue),]
+head(f_res_ordered)
+
+summary(f_res)
+
+# making the DF and adding gene name annotations
+f_res_df <- as.data.frame(f_res_ordered)
+f_res_df$symbol <- mapIds(org.Rn.eg.db, 
+                          keys = rownames(f_res_df), 
+                          keytype = "ENSEMBL",
+                          multiVals = "first",
+                          column = "SYMBOL")
+
+f_res_df_2 <- f_res_df %>%
+  filter(padj < 0.05) 
+
+write.csv(f_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/femalessiggenes.csv")
+
+write.csv(m_res_df_2, "/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/malessiggenes.csv")
+
+write.csv(f_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/f_res_df.csv")
+write.csv(m_res_df, file = "/stor/work/Fonken/UT21_tagseq/ut21_tagseq/m_res_df.csv")
+```
+
+### Comparing males and females with only oil
+
+```{r fig.height = 8, fig.width = 8}
+group_info_oil <- group_info[group_info$treatment == "oil", ]
+
+matrix_oil <- matrix[, (group_info_oil$id)]
+
+### Females and Males 
+# constructing object 
+mf_dds <- DESeqDataSetFromMatrix(countData = matrix_oil,
+                       colData = group_info_oil, 
+                       design = ~sex)
+
+# prefiltering, only keeping genes with more than XX reads
+mf_keep <- rowSums(counts(mf_dds)) >= 10
+mf_dds <- mf_dds[mf_keep,]
+
+# running DESeq
+mf_dds <- DESeq(mf_dds)
+mf_res <- results(mf_dds, contrast = c("sex", "female", "male"))
+mf_res
+
+summary(mf_res)
+
+mf_res_ordered <- mf_res[order(mf_res$pvalue),]
+head(mf_res_ordered)
+
+# DF and gene name annotations
+mf_res_df <- as.data.frame(mf_res_ordered)
+mf_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(mf_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+
+# Males vs Females Volcano 
+mf_volcano <- EnhancedVolcano(mf_res_df,
+                             lab = mf_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             pCutoffCol = "padj",
+                             #xlim = c(-4, 4),
+                             #ylim = c(0, 20),
+                             subtitle = NULL,
+                             selectLab = c("Kdm5d", "Eif2s3y", "LOC103694537", "Ddx3", "Uty", "Eif2s3", "Amz1", "ENSRNOG00000065796"),
+                             drawConnectors = TRUE,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("#D3D3D3", "gray50", "#8B8589", "#8B8589")
+                             ) + 
+  ggtitle("Female vs Male Oil") + 
+  annotate("text", x = 1, y = 22, label = "↑ in females", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 22, label = "↑ in males", hjust = 0, size = 5, color = 'black') +
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+mf_volcano
+
+# Male vs female 
+# Creating the Ranked Gene List for GSEA GO Analysis 
+mf_genelist <- mf_res_df$log2FoldChange
+names(mf_genelist) <- mf_res_df$symbol
+mf_genelist = sort(mf_genelist, decreasing = TRUE)
+
+gse_mf <- gseGO(geneList=mf_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_mf_df <- gse_mf@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_mf@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_mf_graph <- ggplot(gse_mf_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#8B8589", "FALSE" = "#8B8589")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+gse_mf_graph
+```
+
+### **Comparing all males and females**
+
+```{r}
+### Females and Males 
+# constructing object 
+mf_dds <- DESeqDataSetFromMatrix(countData = matrix,
+                       colData = group_info, 
+                       design = ~sex)
+
+# prefiltering, only keeping genes with more than XX reads
+mf_keep <- rowSums(counts(mf_dds)) >= 10
+mf_dds <- mf_dds[mf_keep,]
+
+# running DESeq
+mf_dds <- DESeq(mf_dds)
+mf_res <- results(mf_dds, contrast = c("sex", "female", "male"))
+mf_res
+
+summary(mf_res)
+
+mf_res_ordered <- mf_res[order(mf_res$pvalue),]
+head(mf_res_ordered)
+
+# DF and gene name annotations
+mf_res_df <- as.data.frame(mf_res_ordered)
+mf_res_df$symbol <- mapIds(org.Rn.eg.db, keys = rownames(mf_res_df), keytype = "ENSEMBL", column = "SYMBOL")
+```
+
+### Volcano Plots
+
+```{r fig.height = 5, fig.width = 10}
+m_volcano <- EnhancedVolcano(m_res_df,
+  lab = m_res_df$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue', 
+  pCutoffCol = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 1.5,
+  xlim = c(-6, 6),
+  ylim = c(0, 8),
+  title = "Males",
+  legendPosition = 'none',
+  subtitle = NULL,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  col = c("grey30", "red2", "orange", "forestgreen"))
+
+f_volcano <- EnhancedVolcano(f_res_df,
+  lab = f_res_df$symbol,
+  x = 'log2FoldChange',
+  y = 'pvalue', 
+  pCutoffCol = "padj",
+  pCutoff = 0.05,
+  FCcutoff = 1.5,
+  xlim = c(-6, 6),
+  ylim = c(0, 8),
+  title = "Females",
+  legendPosition = 'none',
+  subtitle = NULL,
+  gridlines.major = FALSE,
+  gridlines.minor = FALSE,
+  col = c("grey30", "red2", "orange", "forestgreen"))
+
+volcano_combo <- f_volcano + m_volcano
+volcano_combo
+```
+
+## Original Figure 
+
+```{r fig.height = 15, fig.width = 12}
+# Males --------
+# Creating the Ranked Gene List for GSEA GO Analysis 
+m_genelist <- m_res_df$log2FoldChange
+names(m_genelist) <- m_res_df$symbol
+m_genelist = sort(m_genelist, decreasing = TRUE)
+
+gse_m <- gseGO(geneList=m_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_m_df <- gse_m@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_m@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_m_graph <- ggplot(gse_m_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#73B2FA", "FALSE" = "#73B2FA")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+#Females
+# Creating the Ranked Gene List for GSEA GO Analysis 
+f_genelist <- f_res_df$log2FoldChange
+names(f_genelist) <- f_res_df$symbol
+f_genelist = sort(f_genelist, decreasing = TRUE)
+
+gse_f <- gseGO(geneList=f_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_f_df <- gse_f@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_f@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_f_graph <- ggplot(gse_f_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#F19837", "FALSE" = "#F19837")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+# Males
+# Creating the ranked gene list for GSEA KEGG Analysis (This one needs EntrezIDs)
+ m_res_df_kegg <-  m_res_df %>%
+  rownames_to_column(var = "gene")
+
+ m_res_df_kegg$entrez_id <- mapIds(org.Rn.eg.db, 
+                               keys = m_res_df_kegg$gene, 
+                               column = "ENTREZID", 
+                               keytype = "ENSEMBL", 
+                               multiVals = "first")
+
+# Excluding NA values 
+ m_res_df_kegg <- na.omit(m_res_df_kegg)
+
+# Creating list 
+kegglist <- m_res_df_kegg$log2FoldChange
+names(kegglist) <- m_res_df_kegg$entrez_id
+kegglist = sort(kegglist, decreasing = TRUE)
+kegg_organism = "rno" # need to define organism with 3 letter code
+
+m_kegg <- gseKEGG(geneList = kegglist,
+               organism     = kegg_organism,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid")
+
+m_kegg_df <- m_kegg@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            m_kegg@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+m_kegg_graph <- ggplot(m_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#73B2FA", "FALSE" = "#73B2FA")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("KEGG Pathways") + 
+    ylab(NULL)
+
+m_kegg_graph
+
+# Females
+# Creating the ranked gene list for GSEA KEGG Analysis (This one needs EntrezIDs)
+ f_res_df_kegg <-  f_res_df %>%
+  rownames_to_column(var = "gene")
+
+ f_res_df_kegg$entrez_id <- mapIds(org.Rn.eg.db, 
+                               keys = f_res_df_kegg$gene, 
+                               column = "ENTREZID", 
+                               keytype = "ENSEMBL", 
+                               multiVals = "first")
+
+# Excluding NA values 
+ f_res_df_kegg <- na.omit(f_res_df_kegg)
+
+# Creating list 
+kegglist <- f_res_df_kegg$log2FoldChange
+names(kegglist) <- f_res_df_kegg$entrez_id
+kegglist = sort(kegglist, decreasing = TRUE)
+kegg_organism = "rno" # need to define organism with 3 letter code
+
+f_kegg <- gseKEGG(geneList = kegglist,
+               organism     = kegg_organism,
+               minGSSize    = 3,
+               maxGSSize    = 800,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "none",
+               keyType       = "ncbi-geneid")
+
+f_kegg_df <- f_kegg@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            f_kegg@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+f_kegg_graph <- ggplot(f_kegg_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#F19837", "FALSE" = "#F19837")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("KEGG Pathways") + 
+    ylab(NULL)
+
+f_kegg_graph
+
+# Volcano plots read in
+# Males
+volcano_m <- EnhancedVolcano(m_res_df,
+                             lab = m_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             #selectLab = c('Mfrp','Igfbp2'),
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 9),
+                             subtitle = NULL,
+                             drawConnectors = TRUE,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("gray50", "#96A9C5", "#73B2FA", "#73B2FA")
+                             ) + 
+  ggtitle("Males") + 
+  annotate("text", x = 1.5, y = 8.7, label = "↑ with flutamide", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with flutamide", hjust = 0, size = 5, color = 'black') +
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+# Females
+volcano_f <- EnhancedVolcano(f_res_df,
+                             lab = f_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 9),
+                             subtitle = NULL,
+                             selectLab = c("Cd9", "Carhsp1", "Septin4", "Ptp4a1", "Apba2", "Eef1a2", "Adap1"),
+                             drawConnectors = TRUE,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("gray50", "#C29A6D", "#F19837", "#F19837")
+                             ) + 
+  ggtitle("Females") + 
+  annotate("text", x = 1, y = 8.7, label = "↑ with testosterone", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with testosterone", hjust = 0, size = 5, color = 'black') +
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+volcano_f
+
+# Figure 2 Creation---
+free(volcano_m + volcano_f) / free(gse_m_graph + gse_f_graph) / (m_kegg_graph + f_kegg_graph) + plot_layout(height = c(2,2,2)) + plot_annotation(tag_levels = 'A') 
+
+ggsave("/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/figurevolcanogokegg.png", dpi = 300, width = 12, height = 15)
+```
+
+## **Second Version of Figure** 
+
+```{r fig.height = 15, fig.width = 12}
+# Males --------
+# Creating the Ranked Gene List for GSEA GO Analysis 
+m_genelist <- m_res_df$log2FoldChange
+names(m_genelist) <- m_res_df$symbol
+m_genelist = sort(m_genelist, decreasing = TRUE)
+
+gse_m <- gseGO(geneList=m_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_m_df <- gse_m@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_m@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_m_graph <- ggplot(gse_m_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#73B2FA", "FALSE" = "#73B2FA")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+#Females
+# Creating the Ranked Gene List for GSEA GO Analysis 
+f_genelist <- f_res_df$log2FoldChange
+names(f_genelist) <- f_res_df$symbol
+f_genelist = sort(f_genelist, decreasing = TRUE)
+
+gse_f <- gseGO(geneList=f_genelist, 
+             ont ="BP", 
+             keyType = "SYMBOL", 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.Rn.eg.db, 
+             pAdjustMethod = "none") 
+
+gse_f_df <- gse_f@result %>%
+        arrange(desc(NES)) %>%
+        slice(1:5) %>%
+        bind_rows(
+            gse_f@result %>%
+            arrange(NES) %>%
+            slice(1:5)
+        )
+
+gse_f_graph <- ggplot(gse_f_df, aes(NES, fct_reorder(Description, NES), fill = NES > 0)) + 
+    geom_col(orientation='y') + 
+    theme_prism(base_size = 9) + 
+    scale_fill_manual(values = c("TRUE" = "#F19837", "FALSE" = "#F19837")) +
+    scale_y_discrete(labels = label_wrap(40)) + 
+    theme(legend.position = "none") + 
+    xlab("Normalized Enrichment Score") + 
+    ggtitle("GO: Biological Processes") + 
+    ylab(NULL)
+
+# Volcano plots read in
+# Males
+volcano_m <- EnhancedVolcano(m_res_df,
+                             lab = m_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             #selectLab = c('Mfrp','Igfbp2'),
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 9),
+                             subtitle = NULL,
+                             drawConnectors = TRUE,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("#D3D3D3", "#96A9C5", "#73B2FA", "#73B2FA")
+                             ) + 
+  ggtitle("Males") + 
+  annotate("text", x = 1.5, y = 8.7, label = "↑ with flutamide", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with flutamide", hjust = 0, size = 5, color = 'black') +
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+# Females
+volcano_f <- EnhancedVolcano(f_res_df,
+                             lab = f_res_df$symbol,
+                             x = "log2FoldChange",
+                             y = "pvalue",
+                             FCcutoff = 0.5,
+                             pCutoff = 0.05,
+                             pCutoffCol = "padj",
+                             xlim = c(-4, 4),
+                             ylim = c(0, 9),
+                             subtitle = NULL,
+                             selectLab = c("Cd9", "Carhsp1", "Septin4", "Ptp4a1", "Apba2", "Eef1a2", "Adap1"),
+                             drawConnectors = TRUE,
+                             gridlines.major = FALSE,
+                             gridlines.minor = FALSE,
+                             col = c("#D3D3D3", "#C29A6D", "#F19837", "#F19837")
+                             ) + 
+  ggtitle("Females") + 
+  annotate("text", x = 1, y = 8.7, label = "↑ with testosterone", hjust = 0, size = 5, color = 'black') +
+  annotate("text", x = -3.5, y = 8.7, label = "↓ with testosterone", hjust = 0, size = 5, color = 'black') +
+  theme_prism(base_size = 10) + 
+  theme(legend.position = "none")
+
+volcano_f
+
+# Figure 2 Creation---
+free(mf_volcano + gse_mf_graph) / free(volcano_m + volcano_f) / (gse_m_graph + gse_f_graph) + plot_layout(height = c(2,2,2)) + plot_annotation(tag_levels = 'A') 
+
+ggsave("/stor/scratch/Fonken/archive/UT21_tagseq/ut21_tagseq/new_figurevolcanogokegg.svg", dpi = 300, width = 12, height = 15)
+```
+
+## Looking at individual genes 
+
+```{r}
+#extracting the counts for genes of interest (use whatever deseq object you want)
+mf_genelist<- counts(mf_dds, normalized = FALSE)%>% 
+  as.data.frame()%>%
+  tibble::rownames_to_column(var = "ENSEMBL")%>% #converting row name to a column 
+  mutate(symbol = mapIds(org.Rn.eg.db, keys = ENSEMBL, keytype = "ENSEMBL", column = "SYMBOL"))%>%
+  subset(select = -ENSEMBL)%>%
+  filter(symbol %in% c("Clu","Gfap", "Apln", "Lxn", "Grin2c", "Aqp4", "Pltp", "Htra1", "Esr1", "Esr2")) #here is where you can input your genes of interest, I looked at a bunch of astrocyte genes 
+
+mf_genelist
+
+#Gfap data frame
+gfapgene<- genelist%>%
+  filter(symbol == "Gfap")%>%
+  subset(select = -symbol)%>% #get rid of the symbol column
+  t()%>% #transpose
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "id")%>%
+  {colnames(.)[2] <- "count"; .}%>%
+  full_join(group_info_oil, by = "id") #(you need to join some group info to this data frame)
+
+#anovas
+gfapmodel <- lm(count ~ sex * treatment, data = gfapgene)
+gfapanova <- anova(gfapmodel)
+gfapanova
+
+emmeans(gfapmodel, pairwise ~ sex + treatment)
+
+#Gfap graph 
+gfapcountsgraph <- ggboxplot(gfapgene, "sex", "count",
+               color = "treatment", 
+               add = "jitter",
+               main = "Gfap Normalized Counts",
+               palette = "jco") + 
+    stat_compare_means(aes(group = sex), label = "p.signif",
+                       label.y = 1500)
+
+gfapcountsgraph
+
+```
+
+### Looking at Ttr expression
+
+```{r}
+ttr_matrix<- matrix
+
+ttr_matrix$symbol <- mapIds(org.Rn.eg.db, keys = rownames(ttr_matrix), keytype = "ENSEMBL", column = "SYMBOL")
+
+ttr_matrix <- ttr_matrix %>%
+  filter(symbol == "Ttr") %>%
+  t() %>%
+  as.data.frame %>%
+  rownames_to_column()
+
+colnames(ttr_matrix) <- c("id", "count")
+
+ttr_matrix <- ttr_matrix %>%
+  left_join(group_info, by = "id") %>%
+  filter(id != "symbol") 
+
+ttr_matrix$count <- as.numeric(as.character(ttr_matrix$count))
+
+ggplot(ttr_matrix, aes(x= id, y = count, color = sex, fill = treatment)) + 
+  geom_bar(stat = "identity") + 
+  ggtitle("Raw Ttr gene counts by sample") + 
+  theme_minimal()
+
+```
+
+### Plot PCA
+
+```{r}
+# males 
+m_vst <- vst(m_dds)
+
+m_pca <- plotPCA(m_vst, intgroup = c("treatment"))  
+  
+m_pca + geom_label(aes(label = name))
+
+# females
+f_vst <- vst(f_dds)
+
+f_pca <- plotPCA(f_vst, intgroup = c("treatment"))
+
+f_pca + geom_label(aes(label = name))
+
+```
